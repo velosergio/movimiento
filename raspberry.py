@@ -9,51 +9,102 @@ import os
 
 def setup_xbox_controller():
     """Función para detectar y configurar el control de Xbox One"""
-    print("Buscando control de Xbox One...")
+    print("Iniciando configuración del control Xbox One...")
     
-    try:
-        # Intentar detectar dispositivos Bluetooth
-        result = subprocess.run(['bluetoothctl', 'devices'], 
-                              capture_output=True, 
-                              text=True)
-        
-        if "Xbox Wireless Controller" not in result.stdout:
-            print("Control Xbox One no encontrado.")
-            print("Por favor, asegúrate de que:")
-            print("1. El control está encendido")
-            print("2. El Bluetooth está activado")
-            print("3. El control está en modo de emparejamiento")
-            print("\nIntentando configurar xboxdrv...")
+    def check_bluetooth_controller():
+        try:
+            # Verificar dispositivos Bluetooth emparejados
+            result = subprocess.run(['bluetoothctl', 'paired-devices'], 
+                                  capture_output=True, 
+                                  text=True)
             
-            # Intentar configurar xboxdrv
-            try:
-                subprocess.run(['sudo', 'xboxdrv', '--detach-kernel-driver'], 
-                             timeout=5)
-            except subprocess.TimeoutExpired:
-                print("xboxdrv configurado correctamente")
-            except Exception as e:
-                print(f"Error configurando xboxdrv: {e}")
-                print("Intenta ejecutar: sudo apt-get install xboxdrv")
-                return False
-        
-        # Verificar si podemos obtener eventos del control
-        timeout = time.time() + 10  # 10 segundos de timeout
-        while time.time() < timeout:
-            try:
-                events = get_gamepad()
-                if events:
-                    print("Control de Xbox One detectado y funcionando")
+            # Verificar dispositivos Bluetooth conectados
+            connected = subprocess.run(['bluetoothctl', 'info'], 
+                                    capture_output=True, 
+                                    text=True)
+            
+            if "Xbox Wireless Controller" in result.stdout:
+                if "Connected: yes" in connected.stdout:
+                    print("Control Xbox One encontrado y conectado")
                     return True
-            except Exception:
-                continue
+                else:
+                    print("Control Xbox One encontrado pero no conectado")
+                    # Intentar conectar automáticamente
+                    device_addr = None
+                    for line in result.stdout.split('\n'):
+                        if "Xbox Wireless Controller" in line:
+                            device_addr = line.split()[1]
+                            break
+                    
+                    if device_addr:
+                        print("Intentando conectar automáticamente...")
+                        connect = subprocess.run(['bluetoothctl', 'connect', device_addr],
+                                              capture_output=True,
+                                              text=True)
+                        return "Connection successful" in connect.stdout
+            return False
+        except Exception as e:
+            print(f"Error verificando Bluetooth: {e}")
+            return False
+
+    def setup_controller_mapping():
+        try:
+            # Verificar si xboxdrv está instalado
+            subprocess.run(['which', 'xboxdrv'], check=True)
+        except subprocess.CalledProcessError:
+            print("xboxdrv no está instalado. Instalando...")
+            try:
+                subprocess.run(['sudo', 'apt-get', 'update'], check=True)
+                subprocess.run(['sudo', 'apt-get', 'install', '-y', 'xboxdrv'], check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"Error instalando xboxdrv: {e}")
+                return False
+
+        try:
+            # Configurar el mapeo del control
+            subprocess.Popen(['sudo', 'xboxdrv', 
+                            '--detach-kernel-driver',
+                            '--dpad-as-button',
+                            '--axismap', '-Y1=Y1',  # Invertir eje Y del stick izquierdo
+                            '--axismap', '-Y2=Y2',  # Invertir eje Y del stick derecho
+                            '--silent'],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+            return True
+        except Exception as e:
+            print(f"Error configurando el mapeo del control: {e}")
+            return False
+
+    # Secuencia principal de configuración
+    print("1. Verificando conexión Bluetooth...")
+    if not check_bluetooth_controller():
+        print("No se encontró el control por Bluetooth")
+        print("Por favor, asegúrate de que:")
+        print("1. El control está encendido")
+        print("2. El Bluetooth está activado")
+        print("3. El control está emparejado con la Raspberry Pi")
+        return False
+
+    print("2. Configurando mapeo del control...")
+    if not setup_controller_mapping():
+        print("Error en la configuración del mapeo del control")
+        return False
+
+    # Verificar si podemos recibir eventos del control
+    print("3. Verificando eventos del control...")
+    timeout = time.time() + 10
+    while time.time() < timeout:
+        try:
+            events = get_gamepad()
+            if events:
+                print("¡Control configurado y funcionando correctamente!")
+                return True
+        except Exception:
             time.sleep(0.1)
-        
-        print("No se pudo detectar eventos del control")
-        return False
-        
-    except Exception as e:
-        print(f"Error durante la configuración del control: {e}")
-        return False
+            continue
+
+    print("No se pudieron detectar eventos del control")
+    return False
 
 def test_controller():
     """Función para probar el control"""
