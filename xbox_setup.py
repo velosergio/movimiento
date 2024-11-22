@@ -48,44 +48,104 @@ SUBSYSTEM=="input", ATTRS{name}=="Xbox Wireless Controller", MODE="0666"
             print(f"Error configurando reglas udev: {e}")
             return False
 
-    def find_xbox_controller(self):
-        """Busca el control de Xbox One entre los dispositivos Bluetooth"""
-        print("Buscando control de Xbox One...")
+    def setup_bluetooth_connection(self):
+        """Configura la conexión Bluetooth con el control de Xbox"""
+        print("Configurando conexión Bluetooth...")
+        
+        def execute_bluetooth_command(command, timeout=10):
+            """Ejecuta comandos de bluetoothctl y retorna la salida"""
+            try:
+                result = subprocess.run(['bluetoothctl', *command.split()],
+                                      capture_output=True,
+                                      text=True,
+                                      timeout=timeout)
+                return result.stdout
+            except subprocess.TimeoutExpired:
+                print(f"Tiempo de espera agotado ejecutando: {command}")
+                return ""
+            except Exception as e:
+                print(f"Error ejecutando {command}: {e}")
+                return ""
+
         try:
-            # Escanear dispositivos Bluetooth
-            subprocess.run(['bluetoothctl', 'scan', 'on'], timeout=10)
-            time.sleep(5)  # Dar tiempo para escanear
+            # Reiniciar el servicio bluetooth
+            subprocess.run(['systemctl', 'restart', 'bluetooth'], check=True)
+            time.sleep(2)
+
+            # Configuración inicial de bluetoothctl
+            execute_bluetooth_command("power on")
+            execute_bluetooth_command("agent on")
+            execute_bluetooth_command("default-agent")
             
-            # Obtener dispositivos emparejados
-            result = subprocess.run(['bluetoothctl', 'paired-devices'],
-                                 capture_output=True, text=True)
+            # Detener cualquier escaneo previo
+            execute_bluetooth_command("scan off")
+            time.sleep(1)
+
+            print("Buscando control de Xbox One...")
+            print("Por favor, mantén presionado el botón de sincronización del control...")
             
-            for line in result.stdout.split('\n'):
-                if self.controller_name in line:
-                    self.controller_mac = line.split()[1]
-                    print(f"Control encontrado: {self.controller_mac}")
-                    return True
+            # Iniciar escaneo en un proceso separado
+            scan_process = subprocess.Popen(['bluetoothctl', 'scan', 'on'],
+                                          stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE)
             
-            print("Control no encontrado")
-            return False
-        except Exception as e:
-            print(f"Error buscando el control: {e}")
+            # Esperar y buscar el control
+            max_attempts = 30
+            attempt = 0
+            while attempt < max_attempts:
+                devices_output = execute_bluetooth_command("devices")
+                for line in devices_output.split('\n'):
+                    if "Xbox Wireless Controller" in line:
+                        self.controller_mac = line.split()[1]
+                        print(f"¡Control encontrado! MAC: {self.controller_mac}")
+                        
+                        # Detener el escaneo
+                        execute_bluetooth_command("scan off")
+                        scan_process.terminate()
+                        
+                        print("Emparejando control...")
+                        pair_result = execute_bluetooth_command(f"pair {self.controller_mac}")
+                        if "Failed" in pair_result:
+                            print("Error en el emparejamiento. Reintentando...")
+                            execute_bluetooth_command(f"remove {self.controller_mac}")
+                            time.sleep(2)
+                            execute_bluetooth_command(f"pair {self.controller_mac}")
+
+                        print("Conectando control...")
+                        connect_result = execute_bluetooth_command(f"connect {self.controller_mac}")
+                        if "Failed" in connect_result:
+                            print("Error en la conexión. Reintentando...")
+                            time.sleep(2)
+                            execute_bluetooth_command(f"connect {self.controller_mac}")
+
+                        print("Estableciendo confianza con el control...")
+                        trust_result = execute_bluetooth_command(f"trust {self.controller_mac}")
+                        
+                        # Verificar estado final
+                        info = execute_bluetooth_command(f"info {self.controller_mac}")
+                        if "Connected: yes" in info:
+                            print("¡Control configurado exitosamente!")
+                            return True
+                        else:
+                            print("Error en la conexión final")
+                            return False
+
+                attempt += 1
+                time.sleep(1)
+                sys.stdout.write(f"\rBuscando control... {attempt}/{max_attempts}")
+                sys.stdout.flush()
+
+            print("\nNo se encontró el control después de varios intentos")
             return False
 
-    def connect_controller(self):
-        """Conecta el control si está disponible"""
-        if not self.controller_mac:
+        except Exception as e:
+            print(f"Error en la configuración Bluetooth: {e}")
             return False
-        
-        try:
-            print("Intentando conectar el control...")
-            subprocess.run(['bluetoothctl', 'connect', self.controller_mac], 
-                         check=True, timeout=10)
-            time.sleep(2)
-            return True
-        except subprocess.CalledProcessError:
-            print("Error conectando el control")
-            return False
+        finally:
+            # Asegurarse de detener el escaneo
+            execute_bluetooth_command("scan off")
+            if 'scan_process' in locals():
+                scan_process.terminate()
 
     def setup_xboxdrv(self):
         """Configura xboxdrv como servicio"""
@@ -141,12 +201,8 @@ WantedBy=multi-user.target
             print("Error configurando reglas del sistema")
             return False
         
-        if not self.find_xbox_controller():
-            print("No se encontró el control. Asegúrate de que está en modo de emparejamiento")
-            return False
-        
-        if not self.connect_controller():
-            print("No se pudo conectar el control")
+        if not self.setup_bluetooth_connection():  # Nueva función
+            print("Error en la configuración Bluetooth")
             return False
         
         if not self.setup_xboxdrv():
